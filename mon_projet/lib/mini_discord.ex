@@ -1,12 +1,16 @@
-defmodule MiniDiscord.Application do
+defmodule MiniDiscord do
   use Application
 
-  @impl true
   def start(_type, _args) do
+    # Pour l'unicite des pseudos (table ETS)
+    :ets.new(:pseudos, [:named_table, :public, :set])
+
+
     children = [
-      {Registry, [keys: :unique, name: MiniDiscord.Registry]},
+      {Registry, keys: :unique, name: MiniDiscord.Registry},
       {DynamicSupervisor, strategy: :one_for_one, name: MiniDiscord.SalonSupervisor},
-      {MiniDiscord.ChatServer,[]}
+      MiniDiscord.ChatServer,
+      {Task.Supervisor, name: MiniDiscord.TaskSupervisor}
     ]
 
     opts = [strategy: :one_for_one, name: MiniDiscord.Supervisor]

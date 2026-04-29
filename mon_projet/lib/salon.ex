@@ -1,58 +1,69 @@
-defmodule MiniDiscord.Salon do 
+defmodule MiniDiscord.Salon do
   use GenServer
 
-  def start_link(nom_salon) do
-    GenServer.start_link(__MODULE__, nom_salon, name: via(nom_salon))
+  @doc """
+  Demarrage du salon avec état complet :
+  name, clients, historique, password (nil = pas de mot de passe)
+  """
+  def start_link(name) do
+    GenServer.start_link(__MODULE__,
+      %{name: name, clients: [], historique: [], password: nil},
+      name: via(name)
+    )
   end
 
-  def rejoindre(nom_salon, client_pid) do 
-    GenServer.call(via(nom_salon), {:rejoindre, client_pid})
-  end 
+  # API publique
+  def rejoindre(salon, pid, password \\ nil), do: GenServer.call(via(salon), {:rejoindre, pid, password})
+  def quitter(salon, pid),                   do: GenServer.call(via(salon), {:quitter, pid})
+  def broadcast(salon, msg),                 do: GenServer.cast(via(salon), {:broadcast, msg})
+  def definir_password(salon, password),     do: GenServer.call(via(salon), {:password, password})
 
-  def broadcast(nom_salon, message) do
-    GenServer.cast(via(nom_salon), {:broadcast, message})
+  def lister do
+    Registry.select(MiniDiscord.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
   end
 
-  @impl true
-  def init(nom_salon) do
-    # On initialise l'état avec le nom du salon et une liste de clients vide
-    {:ok, %{name: nom_salon, clients: []}}
+  def init(state), do: {:ok, state}
+
+  def handle_call({:rejoindre, pid, password}, _from, state) do
+    acces = cond do
+      state.password == nil -> true
+      password == nil -> false
+      :crypto.hash(:sha256, password) == state.password -> true
+      true -> false
+    end
+
+    if acces do
+      Process.monitor(pid)
+      state.historique
+      |> Enum.reverse()
+      |> Enum.each(fn msg -> send(pid, {:message, msg}) end)
+
+      {:reply, :ok, %{state | clients: [pid | state.clients]}}
+    else
+      {:reply, {:error, :mauvais_password}, state}
+    end
+  end  
+
+  # Quitter un salon
+  def handle_call({:quitter, pid}, _from, state) do
+    {:reply, :ok, %{state | clients: List.delete(state.clients, pid)}}
   end
 
-  @impl true
-  def handle_call({:rejoindre, client_pid}, _from, state) do
-    # On surveille le client pour savoir s'il se déconnecte
-    Process.monitor(client_pid)
-    # Q1) Pour être notifié par un message :DOWN si le client crash ou se déconnecte.
-    # On ajoute le client à la liste existante dans le state
-    nouveau_state = %{state | clients: [client_pid | state.clients]}
-    
-    # On répond :ok et on sauvegarde le nouveau state
-    {:reply, :ok, nouveau_state}
-  end 
+  # BONUS
+  def handle_call({:password, password}, _from, state) do
+    hash = :crypto.hash(:sha256, password)
+    {:reply, :ok, %{state | password: hash}}
+  end
 
-  @impl true
-  def handle_cast({:broadcast, message}, state) do 
-    # hanya kan On envoie le message à chaque PID de la liste
-    Enum.each(state.clients, fn pid -> 
-      send(pid, {:message, message})
-    end)
-    
-    {:noreply, state}
-  end 
+  def handle_cast({:broadcast, msg}, state) do
+    Enum.each(state.clients, &send(&1, {:message, msg}))
+    nouvel_historique = Enum.take([msg | state.historique], 10)
+    {:noreply, %{state | historique: nouvel_historique}}
+  end
 
-  @impl true
-  #Q2) Pour nettoyer la liste des clients et éviter de garder des PIDs morts (fuite mémoire).
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    # hnaya kan On retire le PID du client qui vient de se déconnecter
-    nouveaux_clients = List.delete(state.clients, pid)
-  
-    # hnaya kan met à jour l'état du serveur
-    {:noreply, %{state | clients: nouveaux_clients}}
+    {:noreply, %{state | clients: List.delete(state.clients, pid)}}
   end
-#Q3) Cast est asynchrone (non-bloquant) : on n'attend pas que tout le monde reçoive 
-# Q3)le message pour libérer l'envoyeur. Call est synchrone (bloquant).
-  defp via(nom_salon) do
-    {:via, Registry, {MiniDiscord.Registry, nom_salon}}
-  end
+
+  defp via(name), do: {:via, Registry, {MiniDiscord.Registry, name}}
 end

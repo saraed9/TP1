@@ -1,52 +1,138 @@
 defmodule MiniDiscord.ClientHandler do
-  use GenServer
   require Logger
 
-  def start_link(socket) do
-    GenServer.start_link(__MODULE__, socket)
+  @doc """
+  Demarrage du client :
+    - affiche de bienvenue, demande du pseudo, affichage des salons et demande du salon à rejoindre
+    - lance la relation pseudo, salon : rejoindre_salon(socket, pseudo, salon)
+  """
+  def start(socket) do
+    :gen_tcp.send(socket, "Bienvenue sur MiniDiscord!\r\n")
+    pseudo = choisir_pseudo(socket)
+
+    :gen_tcp.send(socket, "Salon disponibles : #{salons_dispo()}\r\n")
+    :gen_tcp.send(socket, "Rejoins un salon (ex:general) : ")
+    {:ok, salon} = :gen_tcp.recv(socket, 0)
+    salon = String.trim(salon)
+
+    rejoindre_salon(socket, pseudo, salon)
   end
 
-  @impl true
-  def init(socket) do
-    send_text(socket, "Bienvenue sur MiniDiscord!\nEntre ton pseudo : ")
-    {:ok, %{socket: socket, pseudo: nil, salon: nil}}
-  end
+  defp choisir_pseudo(socket) do
+    :gen_tcp.send(socket, "Entrer ton pseudo : ")
+    {:ok, pseudo} = :gen_tcp.recv(socket, 0)
+    pseudo = String.trim(pseudo)
 
-  @impl true
-  def handle_info({:tcp, socket, data}, state) do
-    input = String.trim(data)
-
-    cond do
-      is_nil(state.pseudo) ->
-        send_text(socket, "Salons disponibles : unSalon\nRejoins un salon : ")
-        {:noreply, %{state | pseudo: input}}
-
-      is_nil(state.salon) ->
-        MiniDiscord.Salon.rejoindre(input, self())
-        send_text(socket, "Tu es dans ##{input} — écris tes messages !\n")
-        
-        MiniDiscord.Salon.broadcast(input, "📢 #{state.pseudo} a rejoint ##{input}")
-        {:noreply, %{state | salon: input}}
-
-      true ->
-        MiniDiscord.Salon.broadcast(state.salon, "[#{state.pseudo}]: #{input}")
-        {:noreply, state}
+    if pseudo_disponible?(pseudo) do
+      reserver_pseudo(pseudo)
+      pseudo
+    else
+      :gen_tcp.send(socket, "Pseudo \"#{pseudo}\" deja pris, veuillez choisir un autre.\r\n")
+      choisir_pseudo(socket)
     end
   end
 
-  @impl true
-  def handle_info({:message, msg}, state) do
-    send_text(state.socket, msg <> "\n")
-    {:noreply, state}
+  defp rejoindre_salon(socket, pseudo, salon) do
+  case Registry.lookup(MiniDiscord.Registry, salon) do
+    [] -> DynamicSupervisor.start_child(MiniDiscord.SalonSupervisor, {MiniDiscord.Salon, salon})
+    _  -> :ok
   end
 
-  @impl true
-  def handle_info({:tcp_closed, _socket}, state) do
-    Logger.info("Client #{state.pseudo} déconnecté.")
-    {:stop, :normal, state}
+  # Demander le mot de passe au client
+  :gen_tcp.send(socket, "Mot de passe du salon (appuie sur Entrée si aucun) : ")
+  {:ok, password} = :gen_tcp.recv(socket, 0)
+  password = String.trim(password)
+  password = if password == "", do: nil, else: password
+
+  case MiniDiscord.Salon.rejoindre(salon, self(), password) do
+    :ok ->
+      MiniDiscord.Salon.broadcast(salon, "📢 #{pseudo} a rejoint ##{salon}\r\n")
+      :gen_tcp.send(socket, "Tu es dans ##{salon} — écris tes messages !\r\n")
+      :gen_tcp.send(socket, "Commandes : /list /join <salon> /quit\r\n")
+      loop(socket, pseudo, salon)
+    {:error, :mauvais_password} ->
+      :gen_tcp.send(socket, "❌ Mot de passe incorrect !\r\n")
+      loop(socket, pseudo, salon)
+  end
+end
+
+  defp loop(socket, pseudo, salon) do
+    # Messages entrants du salon →  client
+    receive do
+      {:message, msg} -> :gen_tcp.send(socket, msg)
+      after 0 -> :ok
+    end
+
+    case :gen_tcp.recv(socket, 0, 100) do
+      {:ok, msg} ->
+        msg = String.trim(msg)
+        if String.starts_with?(msg, "/") do
+          gerer_commande(socket, pseudo, salon, msg)
+        else
+          MiniDiscord.Salon.broadcast(salon, "[#{pseudo}] #{msg}\r\n")
+          loop(socket, pseudo, salon)
+        end
+
+      {:error, :timeout} ->
+        loop(socket, pseudo, salon)
+
+      {:error, reason} ->
+        Logger.info("Client déconnecté : #{inspect(reason)}")
+        deconnecter(pseudo, salon)
+    end
   end
 
-  defp send_text(socket, text) do
-    :gen_tcp.send(socket, text)
+  defp gerer_commande(socket, pseudo, salon, commande) do
+    case commande do
+      "/list" ->
+        liste = MiniDiscord.Salon.lister() |> Enum.join(", ")
+        :gen_tcp.send(socket, " Salon disponibles : #{liste}\r\n")
+        loop(socket, pseudo, salon)
+
+      "/quit" ->
+        :gen_tcp.send(socket, " Adiosss #{pseudo} !👋\r\n")
+        deconnecter(pseudo, salon)
+
+      "/join" <> nouveau_salon ->
+        nouveau_salon = String.trim(nouveau_salon)
+        # pour quitter le salon ancien
+        MiniDiscord.Salon.broadcast(salon, "👋 #{pseudo} a quitte ##{salon}\r\n")
+        MiniDiscord.Salon.quitter(salon, self())
+        # Rejoindre le nouveau
+        rejoindre_salon(socket, pseudo, nouveau_salon)
+
+      _ ->
+        :gen_tcp.send(socket, " Commande inconnue. Commandes : /list  /join <salon>  /quit\r\n")
+        loop(socket, pseudo, salon)
+    end
+  end
+
+  defp deconnecter(pseudo, salon) do
+    MiniDiscord.Salon.broadcast(salon, " #{pseudo} a quitte ##{salon}\r\n")
+    MiniDiscord.Salon.quitter(salon, self())
+    liberer_pseudo(pseudo)
+  end
+
+  #retourne true si le pseudo n'est pas pris
+  defp pseudo_disponible?(pseudo) do
+    :ets.lookup(:pseudos, pseudo) == []
+  end
+
+  # Reservation du pseudo en l'associant au PID courant
+  defp reserver_pseudo(pseudo) do
+    :ets.insert(:pseudos, {pseudo, self()})
+  end
+
+  #liberer le pseudo
+  defp liberer_pseudo(pseudo) do
+    :ets.delete(:pseudos, pseudo)
+  end
+
+  # Retourne la liste des salons
+  defp salons_dispo do
+    case MiniDiscord.Salon.lister() do
+      []     -> "aucun (tu seras le premier !)"
+      salons -> Enum.join(salons, ", ")
+    end
   end
 end
