@@ -37,6 +37,7 @@ defmodule MiniDiscord.ChatServer do
     - state: de type {listen_socket,  #Port<0.3>} dont on recupere le port  (dans ls)
   """
   def handle_info(:accept, %{listen_socket: ls} = state) do
+    # on accepte la connexion du client
     {:ok, client_socket} = :gen_tcp.accept(ls)
     Task.Supervisor.start_child(
       MiniDiscord.TaskSupervisor,

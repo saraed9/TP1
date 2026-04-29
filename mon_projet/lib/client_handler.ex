@@ -22,17 +22,18 @@ defmodule MiniDiscord.ClientHandler do
     :gen_tcp.send(socket, "Entrer ton pseudo : ")
     {:ok, pseudo} = :gen_tcp.recv(socket, 0)
     pseudo = String.trim(pseudo)
-
+    # verification dans la table ETS  pour l'unicite du pseudo
     if pseudo_disponible?(pseudo) do
       reserver_pseudo(pseudo)
       pseudo
     else
       :gen_tcp.send(socket, "Pseudo \"#{pseudo}\" deja pris, veuillez choisir un autre.\r\n")
-      choisir_pseudo(socket)
+      choisir_pseudo(socket) # jusqu'a avoir un pseudo valide
     end
   end
 
   defp rejoindre_salon(socket, pseudo, salon) do
+  # si le salon n'existe pas dans le Registry on le cree 
   case Registry.lookup(MiniDiscord.Registry, salon) do
     [] -> DynamicSupervisor.start_child(MiniDiscord.SalonSupervisor, {MiniDiscord.Salon, salon})
     _  -> :ok
@@ -57,26 +58,29 @@ defmodule MiniDiscord.ClientHandler do
 end
 
   defp loop(socket, pseudo, salon) do
-    # Messages entrants du salon →  client
+    # Verifie si des messages sont arrives du salon
     receive do
       {:message, msg} -> :gen_tcp.send(socket, msg)
-      after 0 -> :ok
+      after 0 -> :ok #ne pas bloquer si y a pas de message
     end
-
+    # ecout des messages envoyes
     case :gen_tcp.recv(socket, 0, 100) do
       {:ok, msg} ->
         msg = String.trim(msg)
+        # detecter le "/" 
         if String.starts_with?(msg, "/") do
           gerer_commande(socket, pseudo, salon, msg)
         else
+        # message normale 
           MiniDiscord.Salon.broadcast(salon, "[#{pseudo}] #{msg}\r\n")
           loop(socket, pseudo, salon)
         end
 
       {:error, :timeout} ->
-        loop(socket, pseudo, salon)
+        loop(socket, pseudo, salon)# pour maintenir la connecxion
 
       {:error, reason} ->
+      # deconnexion
         Logger.info("Client déconnecté : #{inspect(reason)}")
         deconnecter(pseudo, salon)
     end

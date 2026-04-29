@@ -19,6 +19,7 @@ defmodule MiniDiscord.Salon do
   def definir_password(salon, password),     do: GenServer.call(via(salon), {:password, password})
 
   def lister do
+  #recupere tous les noms enregistres daans le registry 
     Registry.select(MiniDiscord.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
   end
 
@@ -33,6 +34,7 @@ defmodule MiniDiscord.Salon do
     end
 
     if acces do
+    # On renvoie l'histoqiwue au client dans l'ordre chronologique
       Process.monitor(pid)
       state.historique
       |> Enum.reverse()
@@ -56,12 +58,15 @@ defmodule MiniDiscord.Salon do
   end
 
   def handle_cast({:broadcast, msg}, state) do
+  # Envoie du msg a tous les clients actuellement dans le salon 
     Enum.each(state.clients, &send(&1, {:message, msg}))
+    # On ajoute le message en tete et oon garde que les 10 recents
     nouvel_historique = Enum.take([msg | state.historique], 10)
     {:noreply, %{state | historique: nouvel_historique}}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    #Si le client crash on le retire de la liste
     {:noreply, %{state | clients: List.delete(state.clients, pid)}}
   end
 
