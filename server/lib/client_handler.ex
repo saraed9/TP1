@@ -15,14 +15,15 @@ defmodule MiniDiscord.ClientHandler do
   defp chiffrer(msg)do
     cle= get_cle()
     iv= :crypto.strong_rand_bytes(16)
-    msg_c= :crypto.crypto_oone_time(:aes_256_ctr, cle,iv,msg,true)
-    iv <> msg_c
+    msg_c= :crypto.crypto_one_time(:aes_256_ctr, cle,iv,msg,true)
+    Base.encode64(iv <> msg_c) <> "\r\n"
   end
 
   defp dechiffrer(donnees) do
     cle=get_cle()
-    <<iv::binary-size(16),msg_chiffre::binary>> =donnees
-    :crypto.crypto_oone_time(:aes_256_ctr, cle, iv, msg_chiffre, false)
+    {:ok, binaire} = Base.decode64(String.trim(donnees))
+    <<iv::binary-size(16),msg_chiffre::binary>> =binaire
+    :crypto.crypto_one_time(:aes_256_ctr, cle, iv, msg_chiffre, false)
   end
 
   defp recv_dec(socket) do
@@ -43,27 +44,27 @@ defmodule MiniDiscord.ClientHandler do
     :gen_tcp.send(socket, chiffrer(msg))
   end
   def start(socket) do
-    :gen_tcp.send(socket, "Bienvenue sur MiniDiscord!\r\n")
+    send_enc(socket, "Bienvenue sur MiniDiscord!\r\n")
     pseudo = choisir_pseudo(socket)
 
-    :gen_tcp.send(socket, "Salon disponibles : #{salons_dispo()}\r\n")
-    :gen_tcp.send(socket, "Rejoins un salon (ex:general) : ")
-    {:ok, salon} = :gen_tcp.recv(socket, 0)
+    send_enc(socket, "Salon disponibles : #{salons_dispo()}\r\n")
+    send_enc(socket, "Rejoins un salon (ex:general) : ")
+    {:ok, salon} = recv_dec(socket)
     salon = String.trim(salon)
 
     rejoindre_salon(socket, pseudo, salon)
   end
 
   defp choisir_pseudo(socket) do
-    :gen_tcp.send(socket, "Entrer ton pseudo : ")
-    {:ok, pseudo} = :gen_tcp.recv(socket, 0)
+    send_enc(socket, "Entrer ton pseudo : ")
+    {:ok, pseudo} = recv_dec(socket)
     pseudo = String.trim(pseudo)
     # verification dans la table ETS  pour l'unicite du pseudo
     if pseudo_disponible?(pseudo) do
       reserver_pseudo(pseudo)
       pseudo
     else
-      :gen_tcp.send(socket, "Pseudo \"#{pseudo}\" deja pris, veuillez choisir un autre.\r\n")
+      send_enc(socket, "Pseudo \"#{pseudo}\" deja pris, veuillez choisir un autre.\r\n")
       choisir_pseudo(socket) # jusqu'a avoir un pseudo valide
     end
   end
@@ -76,19 +77,19 @@ defmodule MiniDiscord.ClientHandler do
   end
 
   # Demander le mot de passe au client
-  :gen_tcp.send(socket, "Mot de passe du salon (appuie sur Entrée si aucun) : ")
-  {:ok, password} = :gen_tcp.recv(socket, 0)
+  send_enc(socket, "Mot de passe du salon (appuie sur Entrée si aucun) : ")
+  {:ok, password} = recv_dec(socket)
   password = String.trim(password)
   password = if password == "", do: nil, else: password
 
   case MiniDiscord.Salon.rejoindre(salon, self(), password) do
     :ok ->
       MiniDiscord.Salon.broadcast(salon, "📢 #{pseudo} a rejoint ##{salon}\r\n")
-      :gen_tcp.send(socket, "Tu es dans ##{salon} — écris tes messages !\r\n")
-      :gen_tcp.send(socket, "Commandes : /list /join <salon> /quit\r\n")
+      send_enc(socket, "Tu es dans ##{salon} — écris tes messages !\r\n")
+      send_enc(socket, "Commandes : /list /join <salon> /quit\r\n")
       loop(socket, pseudo, salon)
     {:error, :mauvais_password} ->
-      :gen_tcp.send(socket, "❌ Mot de passe incorrect !\r\n")
+      send_enc(socket, "❌ Mot de passe incorrect !\r\n")
       loop(socket, pseudo, salon)
   end
 end
@@ -96,11 +97,11 @@ end
   defp loop(socket, pseudo, salon) do
     # Verifie si des messages sont arrives du salon
     receive do
-      {:message, msg} -> :gen_tcp.send(socket, msg)
+      {:message, msg} ->  send_enc(socket, msg <> "\n")
       after 0 -> :ok #ne pas bloquer si y a pas de message
     end
     # ecout des messages envoyes
-    case :gen_tcp.recv(socket, 0, 100) do
+    case recv_dec(socket, 100) do
       {:ok, msg} ->
         msg = String.trim(msg)
         # detecter le "/"
@@ -126,11 +127,11 @@ end
     case commande do
       "/list" ->
         liste = MiniDiscord.Salon.lister() |> Enum.join(", ")
-        :gen_tcp.send(socket, " Salon disponibles : #{liste}\r\n")
+        send_enc(socket, " Salon disponibles : #{liste}\r\n")
         loop(socket, pseudo, salon)
 
       "/quit" ->
-        :gen_tcp.send(socket, " Adiosss #{pseudo} !👋\r\n")
+        send_enc(socket, " Adiosss #{pseudo} !👋\r\n")
         deconnecter(pseudo, salon)
 
       "/join" <> nouveau_salon ->
@@ -142,7 +143,7 @@ end
         rejoindre_salon(socket, pseudo, nouveau_salon)
 
       _ ->
-        :gen_tcp.send(socket, " Commande inconnue. Commandes : /list  /join <salon>  /quit\r\n")
+        send_enc(socket, " Commande inconnue. Commandes : /list  /join <salon>  /quit\r\n")
         loop(socket, pseudo, salon)
     end
   end

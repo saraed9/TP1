@@ -7,6 +7,7 @@ defmodule Client do
   def start(host, port) do
    connect_with_retry(host, port, 1)
   end
+
   #partie crypto
   defp get_cle, do: File.read!("../cle.bin")
 
@@ -14,17 +15,18 @@ defmodule Client do
     cle=get_cle()
     iv= :crypto.strong_rand_bytes(16)
     msg_c= :crypto.crypto_one_time(:aes_256_ctr, cle,iv,msg,true)
-    iv <> msg_c
+    Base.encode64(iv <> msg_c) <> "\r\n"
   end
 
   defp dechiffrer(donnees) do
     cle=get_cle()
-    <<iv::binary-size(16),msg_chiffre::binary>> =donnees
+    {:ok, binaire} = Base.decode64(String.trim(donnees))
+    <<iv::binary-size(16),msg_chiffre::binary>> =binaire
     :crypto.crypto_one_time(:aes_256_ctr, cle, iv, msg_chiffre, false)
   end
 
   defp connect_with_retry(host, port, attempt) do
-    opts = [:binary, packet: 0, active: false]
+    opts = [:binary, packet: :line, active: false]
     case :gen_tcp.connect(String.to_charlist(host), port, opts) do
       {:ok, socket} ->
         IO.puts("Connecté au serveur !")
@@ -46,18 +48,17 @@ defmodule Client do
   recv_print(socket)   # Entrer ton pseudo :
 
   pseudo = IO.gets("") |> String.trim()
-  :gen_tcp.send(socket, chiffrer(pseudo <> "\n"))#chiffree
+  :gen_tcp.send(socket, chiffrer(pseudo))#chiffree
 
   recv_print(socket)
   recv_print(socket)   # Rejoins un salon (ex:general) :
 
   salon = IO.gets("") |> String.trim()
-  :gen_tcp.send(socket, chiffrer(salon <> "\n"))#chiffree
+  :gen_tcp.send(socket, chiffrer(salon))#chiffree
 
   recv_print(socket)   # Mot de passe du salon ... :
   password = IO.gets("") |> String.trim()
-  :gen_tcp.send(socket, chiffrer(password <> "\n"))#chiffree
-
+  :gen_tcp.send(socket, chiffrer(password))#chiffree
   recv_print(socket)   # Tu es dans #salon ...
   recv_print(socket)   # Commandes : ...
  end
@@ -65,8 +66,12 @@ defmodule Client do
   defp receive_loop(socket, host, port) do
     case :gen_tcp.recv(socket, 0) do
       {:ok, donnees} ->
-        IO.write(dechiffrer(donnees))
-        receive_loop(socket,host,port)
+        msg=dechiffrer(donnees) |> String.trim()
+        case valider_message(msg) do
+          {:ok, msg} -> IO.puts(msg)
+          {:error, reason} -> IO.puts("Message reçu invalide : #{reason}")
+        end
+        receive_loop(socket, host, port)
         {:error, reason} ->
         IO.puts("Connexion perdue : (#{reason}). Reconnexion...")
         :gen_tcp.close(socket)
@@ -80,7 +85,7 @@ defmodule Client do
       input ->
         case valider_message(input) do
           {:ok, msg} ->
-            :gen_tcp.send(socket, chiffrer(msg <> "\n"))#chiffree
+            :gen_tcp.send(socket, chiffrer(msg))#chiffree
             send_loop(socket)
           {:error, reason} ->
             IO.puts("Attention : #{reason}")
@@ -92,7 +97,9 @@ defmodule Client do
  defp recv_print(socket) do
     case :gen_tcp.recv(socket, 0, 2000) do  # 2 secondes
       {:ok, msg}        ->
-        IO.write(dechiffrer(msg))
+       #Pour voire le chiffrement:
+       # IO.puts("=== RESEAU (chiffre) : #{String.trim(msg)}")
+        IO.puts(dechiffrer(msg) |> String.trim())
       {:error, :timeout} -> :ok  # pas de message, continuer
       {:error, reason}  -> IO.puts("Erreur : #{reason}")
     end
