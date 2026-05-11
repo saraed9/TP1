@@ -6,6 +6,42 @@ defmodule MiniDiscord.ClientHandler do
     - affiche de bienvenue, demande du pseudo, affichage des salons et demande du salon à rejoindre
     - lance la relation pseudo, salon : rejoindre_salon(socket, pseudo, salon)
   """
+  #Cette partie est la partie de crypto:
+  defp get_cle do
+    [{:cle,cle}]= :ets.lookup(:crypto_config, :cle)
+    cle
+  end
+
+  defp chiffrer(msg)do
+    cle= get_cle()
+    iv= :crypto.strong_rand_bytes(16)
+    msg_c= :crypto.crypto_oone_time(:aes_256_ctr, cle,iv,msg,true)
+    iv <> msg_c
+  end
+
+  defp dechiffrer(donnees) do
+    cle=get_cle()
+    <<iv::binary-size(16),msg_chiffre::binary>> =donnees
+    :crypto.crypto_oone_time(:aes_256_ctr, cle, iv, msg_chiffre, false)
+  end
+
+  defp recv_dec(socket) do
+    case :gen_tcp.recv(socket, 0) do
+      {:ok, donnees} -> {:ok, dechiffrer(donnees)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp recv_dec(socket,timeout) do
+    case :gen_tcp.recv(socket, 0, timeout) do
+      {:ok, donnees} -> {:ok, dechiffrer(donnees)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+   defp send_enc(socket, msg) do
+    :gen_tcp.send(socket, chiffrer(msg))
+  end
   def start(socket) do
     :gen_tcp.send(socket, "Bienvenue sur MiniDiscord!\r\n")
     pseudo = choisir_pseudo(socket)
