@@ -23,7 +23,7 @@ client/
 - **Validation des messages** avant envoi/réception : rejette les messages vides, trop longs (> 500 caractères), ou contenant des caractères interdits (`\ ? < >` ...)
 - **Chiffrement AES-256-CTR** des messages envoyés/reçus, avec IV aléatoire par message (clé partagée avec le serveur via `cle.bin`)
 
-## ⚙️ Prérequis
+## Prérequis
 
 - Elixir / Erlang OTP
 - Un serveur MiniDiscord actif (voir [../server](../server)) et sa clé de chiffrement partagée (`cle.bin`, à copier depuis la racine du projet)
