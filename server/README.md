@@ -2,7 +2,7 @@
 
 Elixir est un langage performant dans le domaine de la concurrence et de la robustesse. Il possède également des facilités de communication réseau par son modèle acteur.
 
-Dans ce TP, le but sera de créer un mini Discord; principalement du côté Serveur.
+Dans ce projet, le but sera de créer un mini Discord; principalement du côté Serveur.
 
 
 L'outil mix génère une arborescence de fichiers pour un projet.
@@ -38,5 +38,3 @@ où
     - lance la boucle de reception de message sur le salon
   - salon.ex : cree un processus du nom du salon avec une liste de clients vide
 - test/ : tests (avec ExUnit par défaut, non utilisés ici)
-
-Il vous reste à répondre aux questions posées sur moodle...
